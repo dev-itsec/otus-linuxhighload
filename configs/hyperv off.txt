@@ -1,0 +1,4 @@
+# Если на ПК установлен Hyper-V\WSL то отключаем его, потому что он конфликтует с Vagrant\VirtualBox
+bcdedit /set hypervisorlaunchtype off
+Restart-Computer
+bcdedit /set hypervisorlaunchtype auto

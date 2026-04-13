@@ -1,0 +1,129 @@
+запускаем графана в докер на веб нодах
+
+единая база будет лежать в кластере postgresql
+единые файлы будут лежать в кластере ceph
+
+создаем контейнер
+
+cd /opt/grafana/
+nano docker-compose.yml
+
+services:
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Подключение к PostgreSQL
+      - GF_DATABASE_TYPE=postgres
+      - GF_DATABASE_HOST=10.20.30.100:5432    
+      - GF_DATABASE_NAME=grafana
+      - GF_DATABASE_USER=grafana_user
+      - GF_DATABASE_PASSWORD=grafana123
+      - GF_DATABASE_SSL_MODE=disable
+      
+      # Админка
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      # БИНД-МАУНТ: используем существующую папку на Ceph
+      - /opt/grafana/data:/var/lib/grafana
+      
+      # Опционально: provisioning
+      - /opt/grafana/data/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - /opt/grafana/data/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+	 
+### Настройка источников данных
+# Автоматическое подключение Prometheus
+mkdir -p /opt/grafana/data/provisioning/datasources
+mkdir -p /opt/grafana/data/provisioning/dashboards
+
+cat > /opt/grafana/data/provisioning/datasources/prometheus.yml << 'EOF'
+apiVersion: 1
+
+datasources:
+  # Первый сервер Prometheus
+  - name: Prometheus_Server1
+    type: prometheus
+    access: proxy
+    url: http://10.20.30.56:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: "15s"
+  
+  # Второй сервер Prometheus  
+  - name: Prometheus_Server2
+    type: prometheus
+    access: proxy
+    url: http://10.20.30.57:9090
+    isDefault: false
+    editable: true
+    jsonData:
+      timeInterval: "15s"
+EOF
+
+# Автоматическое подключение Elasticsearch
+cat > /opt/grafana/data/provisioning/datasources/elasticsearch.yml << 'EOF'
+apiVersion: 1
+
+datasources:
+  - name: Elasticsearch
+    type: elasticsearch
+    access: proxy
+    url: https://10.20.30.51:9200
+    basicAuth: true
+    basicAuthUser: "kibana_user"
+    isDefault: false
+    editable: true
+    jsonData:
+      index: "filebeats-*"
+      timeField: "@timestamp"
+      timeInterval: "15s"
+      esVersion: "8.0.0"
+      tlsSkipVerify: true
+      logMessageField: "message"
+      logLevelField: "level"
+    secureJsonData:
+      basicAuthPassword: "kibana123"
+EOF
+
+# Настройка дашбордов для Prometheus
+nano /opt/grafana/data/provisioning/dashboards/dashboard.yml
+
+apiVersion: 1
+
+providers:
+- name: 'default'
+  orgId: 1
+  folder: ''
+  type: file
+  disableDeletion: false
+  editable: true
+  options:
+    path: /etc/grafana/provisioning/dashboards
+	
+nano /opt/grafana/data/provisioning/dashboards/dashboard-node-exp.json
+nano /opt/grafana/data/provisioning/dashboards/dashboard-custom-prom1.json
+nano /opt/grafana/data/provisioning/dashboards/dashboard-custom-prom2.json
+
+Берем файл grafana-dashboard-node-exp.json и grafana-dashboard-custom-prom1.json и grafana-dashboard-custom-prom2.json из корня проекта 
+
+# На хосте (не в контейнере) меняем владельца папки на Ceph
+sudo chown -R 472:472 /opt/grafana/data	 
+	 
+# Запускаем
+docker compose up -d
+
+# Смотрим логи
+docker compose logs -f 
+
+# Проверяем, что база PostgreSQL есть в переменных окружения внутри контейнера
+docker exec -it grafana env
+
+Проверка через psql, что таблицы создались:
+sudo -u postgres psql
+\c grafana
+\dt

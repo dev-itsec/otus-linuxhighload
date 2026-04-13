@@ -1,0 +1,200 @@
+### Настройка haproxy ###
+
+apt install haproxy -y
+mv /etc/haproxy/haproxy.cfg /etc/haproxy/haproxy.cfg.default
+
+# по умолчанию балансировка roundrobin, отключаем это для kibana
+
+nano /etc/haproxy/haproxy.cfg
+
+lobal
+    maxconn 100000
+    log /dev/log local0
+    log /dev/log local1 notice
+    chroot /var/lib/haproxy
+    stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+
+defaults
+    mode tcp
+    log global
+    retries 2
+    timeout queue 5s
+    timeout connect 5s
+    timeout client 60m
+    timeout server 60m
+    timeout check 15s
+
+listen stats
+    mode http
+    bind *:7000
+    stats enable
+    stats uri /
+
+# Прокси для PostgreSQL (мастер)
+listen pg_master
+    bind *:5432
+    option httpchk OPTIONS/master
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+    server pg-node1 10.20.30.41:5432 maxconn 100 check port 8008
+    server pg-node2 10.20.30.42:5432 maxconn 100 check port 8008
+    server pg-node3 10.20.30.43:5432 maxconn 100 check port 8008
+
+# Прокси для PostgreSQL (реплика)
+listen pg_replica
+    bind *:5433
+    option httpchk OPTIONS/replica
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+    server pg-node1 10.20.30.41:5432 maxconn 100 check port 8008
+    server pg-node2 10.20.30.42:5432 maxconn 100 check port 8008
+    server pg-node3 10.20.30.43:5432 maxconn 100 check port 8008
+
+# Прокси для Kibana
+listen kibana
+    bind *:5601
+    mode http
+    option httpchk GET /api/status
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2
+    server web-node1 10.20.30.46:5601 check
+    server web-node2 10.20.30.47:5601 check backup
+
+# Прокси для Grafana
+listen grafana
+    bind *:3000
+    mode http
+    option httpchk GET /api/health
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2
+    server web-node1 10.20.30.46:3000 check
+    server web-node2 10.20.30.47:3000 check backup
+
+# Прокси для HTTP (Django CMS)
+listen http_web
+    mode http
+    bind *:80
+    option httpchk GET /admin/cms
+    http-check expect status 302
+    default-server inter 3s fall 3 rise 2
+    server web-node-1 10.20.30.46:80 maxconn 1000 check
+    server web-node-2 10.20.30.47:80 maxconn 1000 check
+
+
+
+Проверяем конфигурацию
+haproxy -f /etc/haproxy/haproxy.cfg -c
+
+systemctl restart haproxy
+systemctl status haproxy
+
+Смотрим вебинтерфейс
+http://192.168.56.14:7000/
+
+Через вебинтерфейс мы видим два раздела, в первом (production) мы видим доступность лидера, во втором (standby) мы видим доступность репликации
+
+### keepalived ###
+
+Для организации единого ip адреса (Virtual IP) устанавливаем службу keepalived
+apt install keepalived -y
+
+root@proxy-node1:~# nano /etc/keepalived/keepalived.conf
+
+vrrp_script chk_haproxy {
+    script "killall -0 haproxy"
+    interval 2
+    weight 2
+}
+
+vrrp_instance VI_WAN {
+    interface enp0s19
+    state MASTER
+    virtual_router_id 51
+    priority 150    # Выше приоритет
+    
+    virtual_ipaddress {
+        192.168.56.100/24
+    }
+    
+    track_script {
+        chk_haproxy
+    }
+}
+
+vrrp_instance VI_LAN {
+    interface enp0s8
+    state MASTER
+    virtual_router_id 52
+    priority 150    # Выше приоритет
+    
+    virtual_ipaddress {
+        10.20.30.100/24
+    }
+    
+    track_script {
+        chk_haproxy
+    }
+}
+
+root@proxy-node2:~# nano /etc/keepalived/keepalived.conf
+
+vrrp_script chk_haproxy {
+    script "killall -0 haproxy"
+    interval 2
+    weight 2
+}
+
+vrrp_instance VI_WAN {
+    interface enp0s19
+    state SLAVE
+    virtual_router_id 51
+    priority 100    # Ниже приоритет
+    
+    virtual_ipaddress {
+        192.168.56.100/24
+    }
+    
+    track_script {
+        chk_haproxy
+    }
+}
+
+vrrp_instance VI_LAN {
+    interface enp0s8
+    state SLAVE
+    virtual_router_id 52
+    priority 100    # Ниже приоритет
+    
+    virtual_ipaddress {
+        10.20.30.100/24
+    }
+    
+    track_script {
+        chk_haproxy
+    }
+}
+
+
+echo net.ipv4.ip_forward=1 >> /etc/sysctl.conf
+sysctl -p
+
+systemctl enable keepalived
+systemctl start keepalived
+systemctl status keepalived
+
+Проверка
+http://192.168.56.100:7000/
+
+
+
+
+
+
+
+
+
+

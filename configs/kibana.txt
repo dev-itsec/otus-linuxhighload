@@ -1,0 +1,100 @@
+Итак, у нас есть кластер Elastic из трех нод
+
+es-node1 https://10.20.30.51:9200
+es-node2 https://10.20.30.52:9200
+es-node3 https://10.20.30.53:9200
+
+
+Нужно настроить кибану на них на серверах web-node1\web-node2
+
+если нет докера там, то поставить докер с компос
+
+curl -fsSL https://get.docker.com -o get-docker.sh
+sh get-docker.sh
+sudo usermod -aG docker $USER
+
+Создать роль и пользователя для Kibana
+curl -k -u elastic:123456 -X POST "https://10.20.30.51:9200/_security/role/full_access_role" -H 'Content-Type: application/json' -d'
+{
+  "cluster": ["all"],
+  "indices": [
+    {
+      "names": ["*"],
+      "privileges": ["all"],
+      "allow_restricted_indices": true
+    }
+  ],
+  "run_as": ["*"]
+}'
+
+curl -k -u elastic:123456 -X POST "https://10.20.30.51:9200/_security/user/kibana_user" -H 'Content-Type: application/json' -d'
+{
+  "password" : "kibana123",
+  "roles" : ["kibana_admin", "monitoring_user", "full_access_role"],
+  "full_name" : "Kibana User"
+}'
+
+# корнервой из любой ноды эластика cat /etc/elasticsearch/certs/http_ca.crt
+mkdir -p /opt/kibana/certs
+nano /opt/kibana/certs/http_ca.crt 
+
+-----BEGIN CERTIFICATE-----
+MIIFajCCA1KgAwIBAgIVAOz/DeTWVzyqaXqRcg9AmTM5O2ZhMA0GCSqGSIb3DQEB
+CwUAMDwxOjA4BgNVBAMTMUVsYXN0aWNzZWFyY2ggc2VjdXJpdHkgYXV0by1jb25m
+aWd1cmF0aW9uIEhUVFAgQ0EwHhcNMjYwNDA3MTE0MzI4WhcNMjkwNDA2MTE0MzI4
+WjA8MTowOAYDVQQDEzFFbGFzdGljc2VhcmNoIHNlY3VyaXR5IGF1dG8tY29uZmln
+dXJhdGlvbiBIVFRQIENBMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA
+xoix2Cld8N1ensoac2y2UuTxWOEQFGn1DuJ1F0oXWV91fM9Vihdcqij+l7biD0BE
+t5I6vrp7XiGCk0EhFZ4KG9/R8VOWOncsu/7FJFFzHgFzXbrlwTUHuBi+7dwCwIdL
+vlG3lL8UzvzYjTqSX0eIvBd/JrW+lIC6SJRkmhVdhbNuDrmX99QHBX93X1EgxqmN
+DJdoQtOoRN6+i8PBlLPzFzpOhwfC0ceKKb4yvlXDSmm8IsGLKFVS4t0aRiXyGDSO
+m2qGpPW44O0Shy9mSGu/S0sosSc/FQbCLzCPijmvAj2J8QrToKbETy0FmZHe0H9o
+2z6aT13Yolh/K0fK2WSCNnJYAV6jccadRurTyRdV5gX5iYZ0RItyQkUzo0uJHDQh
+3P5xGkQJNNGmcO07GYY6wJUqbUruYevWdMxTWmxrchVJE8VlG2TPfwCJh3YpG04t
+SpFEOSllvy7P9fu/BoLphJflmMkdfMD9pm1YmVWVCOJR+Wa27Nw/H29shkPkrRDn
+1fjS1ETpEnvRsTin+cmbVdvDn2re6nTZncv+Z+uaTLu4wXYgqWwIlH+Bhu6c9AAd
+NuABV63CUZDtA9Y88MUvPtoNODOR+piLjfazcaGYh+r71TRSWDthbaOugL7U++PZ
+DxR6YvW8yRHz7Vw8EVOgruXdQWz/pTV/U6AgV40QC1cCAwEAAaNjMGEwHQYDVR0O
+BBYEFJLxSrPyU0XiKWiwRbud4HkAgZwOMB8GA1UdIwQYMBaAFJLxSrPyU0XiKWiw
+Rbud4HkAgZwOMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgEGMA0GCSqG
+SIb3DQEBCwUAA4ICAQCieINUktFK60Zdaj2ewNyLiyhTN6tMrVK30FAchSOi2i/i
+bcdesaHT6Iy1VRlqR2zWkgvQV4hux0C86gKweQ/9PWnWMOjE6tmxZEdUzNMotGtw
+Hi3yWysIYW780+lrCjSFDCwGGpfJqCbYN0dwVHNr+HK98cN+MJW+COxj5kyQgtl2
+jWr3qN6lnpn4vPV5bwU7NrrhwYMoMEfa3HovOrk+fWn9qt3Cu2usPn233SdBhB+e
+Lq9gcawBzapN/5GkD0F+zeCSuBgcXvzjlmmNHROrqiZflrgcwY31sID6YPxlMa5B
+pySCrZCY1B2ZXkx5wEcc0C2q4JzarupNErij3XYWPTOJrewk1HJc4jzNvemut7fs
+IfKghtux1iLBM2vDFEBt/6zid0dmvpYpJsg1lxpGDUWwVTSrwVD8QuGXSKQzgrrv
+/Adk4CgezqxXD91OQmAVxHWs0o3c2WW/E/vAEfajeTl15pZ+n+Kl32ghexCW6mvH
+wubfr/e9/S6R02KSdxxHlfLv3GqoGz6Vi7VRYhCFYjB549PuQjv8gRxYDy8QWzjh
+my3ZlfDILyT+JVbbZWB5GBAH9/06bChg55zb9D3FT6YnKINsj0PFzlJDXLebYPu4
+iYmjMdboobvCPIP9WD+hh2qKNJPNdGYyXICBJFZ81hQh2pJJalx+70UQBr8g3A==
+-----END CERTIFICATE-----
+
+
+# запускаем контейнер кибаны
+cd /opt/kibana
+nano docker-compose.yml
+
+services:
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.19.13
+    container_name: kibana
+    volumes:
+      - /opt/kibana/certs:/usr/share/kibana/config/certs:ro
+    environment:
+      - SERVER_NAME=kibana
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PUBLICBASEURL=http://192.168.56.100:5601 # IP HAProxy
+      - ELASTICSEARCH_HOSTS=["https://10.20.30.51:9200","https://10.20.30.52:9200","https://10.20.30.53:9200"]
+      - ELASTICSEARCH_USERNAME=kibana_user
+      - ELASTICSEARCH_PASSWORD=kibana123
+      - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=/usr/share/kibana/config/certs/http_ca.crt
+    ports:
+      - "5601:5601"
+    restart: unless-stopped
+
+docker compose up -d
+
+Проверяем
+http://192.168.56.16:5601
+kibana_user\kibana123

@@ -1,0 +1,98 @@
+настройка мониторинга и сборка метрик с cерверов кластера ES через metricbeat
+echo "deb [trusted=yes] https://artifacts.elastic.co/packages/8.x/apt stable main" | sudo tee /etc/apt/sources.list.d/elastic-8.x.list
+apt update
+apt-get install metricbeat
+
+посмотрим какие метрики он умеет собирать
+metricbeat modules list
+
+Включаем модуль для эластика
+metricbeat modules enable elasticsearch-xpack
+
+nano /etc/metricbeat/modules.d/elasticsearch-xpack.yml 
+
+- module: elasticsearch
+  xpack.enabled: true
+  period: 10s
+  hosts: ["https://localhost:9200"]
+  ssl.certificate_authorities: ["/etc/elasticsearch/certs/http_ca.crt"]
+  username: "elastic"
+  password: "123456"
+
+
+nano /etc/metricbeat/metricbeat.yml
+
+output.elasticsearch:
+  hosts: ["localhost:9200"]
+  ssl.certificate_authorities: ["/etc/elasticsearch/certs/http_ca.crt"]
+  preset: balanced
+  protocol: "https"
+  username: "elastic"
+  password: "123456"
+
+
+systemctl restart metricbeat
+systemctl enable metricbeat
+systemctl status metricbeat
+
+
+Проверим подключение к Elasticsearch
+metricbeat test output
+
+Посмотреть есть ли индекс
+curl -k -u elastic:123456 https://10.20.30.41:9200/_cat/indices/metricbeat-*?v
+
+journalctl -u metricbeat -f
+
+Проверяем в кибане 
+http://192.168.56.16:5601/app/monitoring#/overview
+
+#############################################################################
+после настройки мониторинга кластера - ломается страница мониторинга кластера, наверно не стоило включать алерт правила, что он предлагал в кибане после настроинга мониторинга!!
+
+Monitoring Request Error 42
+Unable to create alerts client because the Encrypted Saved Objects plugin is missing encryption key. Please set xpack.encryptedSavedObjects.encryptionKey in the kibana.yml or use the bin/kibana-encryption-keys command.: Unable to create alerts client because the Encrypted Saved Objects plugin is missing encryption key. Please set xpack.encryptedSavedObjects.encryptionKey in the kibana.yml or use the bin/kibana-encryption-keys command.
+
+# Сгенерировать ключи
+docker exec -it kibana /usr/share/kibana/bin/kibana-encryption-keys generate
+
+xpack.encryptedSavedObjects.encryptionKey: 2ad83d19685a03ed8e562050c21736631ee97922a3a79e39f6f987a4ba702148
+xpack.reporting.encryptionKey: fa4456b75be1254caf3634a44c1bd643e7298db45daa0d2be5acba6c16e16bfe
+xpack.security.encryptionKey: 01582e2af78a5f92cc9ff90a2b19eb37198614cb55ed710436ab6d1c555d2eeb
+
+xpack.encryptedSavedObjects.encryptionKey: ed277ab2243148fa8e059c75b53e8b2e932a933253ad021cb037b0926ba831ed
+xpack.reporting.encryptionKey: 356fce5af56848a0782ee90f29acb2effdba0d474518b0bbff97176636dd481d
+xpack.security.encryptionKey: ba23651ce9af207b3d9e9ac5c1b103a2b6dd9d16031e72b0516cc210e997a914
+
+
+добавить в докер компос
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=2ad83d19685a03ed8e562050c21736631ee97922a3a79e39f6f987a4ba702148
+      - XPACK_REPORTING_ENCRYPTIONKEY=fa4456b75be1254caf3634a44c1bd643e7298db45daa0d2be5acba6c16e16bfe
+      - XPACK_SECURITY_ENCRYPTIONKEY=01582e2af78a5f92cc9ff90a2b19eb37198614cb55ed710436ab6d1c555d2eeb
+
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=ed277ab2243148fa8e059c75b53e8b2e932a933253ad021cb037b0926ba831ed
+      - XPACK_REPORTING_ENCRYPTIONKEY=356fce5af56848a0782ee90f29acb2effdba0d474518b0bbff97176636dd481d
+      - XPACK_SECURITY_ENCRYPTIONKEY=ba23651ce9af207b3d9e9ac5c1b103a2b6dd9d16031e72b0516cc210e997a914
+
+
+
+docker compose down && docker compose up -d
+
+
+### загрузка дашбордов metricbeat в kibana
+
+root@es-node1:~# metricbeat setup --dashboards -E setup.kibana.host=10.20.30.47:5601 -E setup.kibana.username=elastic -E setup.kibana.password=123456
+Loading dashboards (Kibana must be running and reachable)
+
+
+Loaded dashboards
+
+идем в кибану и смотрим системный дашборд [Metricbeat System] Overview ECS
+
+
+
+
+
+
+
+

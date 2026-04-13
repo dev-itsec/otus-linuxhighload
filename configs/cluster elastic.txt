@@ -1,0 +1,160 @@
+### ELK ###
+
+Настраиваем три ноды Elastic
+
+es-node1 10.20.30.51
+es-node2 10.20.30.52
+es-node3 10.20.30.53
+
+####################################################
+### Установка первого узла Elasticsearch 8.19.13
+####################################################
+
+echo "deb [trusted=yes] https://artifacts.elastic.co/packages/8.x/apt stable main" | sudo tee /etc/apt/sources.list.d/elastic-8.x.list
+apt update
+apt install elasticsearch
+
+
+Уменьшим потребление памяти для java машины
+nano /etc/elasticsearch/jvm.options
+-Xms1g
+-Xmx1g
+
+Настройки параметров кластера
+
+### ВАЖНО! Выключаем временно интерфейс управления от Vagrant на первончальной мастер ноде, иначе ES ссылки-токены генерит с адресом на интерфейс по умолчанию (для Интернета), а нам нужна локальная сеть 
+
+ip link set enp0s3 down
+
+nano /etc/elasticsearch/elasticsearch.yml
+
+cluster.name: prod
+node.name: es-node1
+network.host: 10.20.30.51
+cluster.initial_master_nodes: ["10.20.30.51"]
+
+systemctl start elasticsearch.service
+systemctl enable elasticsearch.service
+systemctl status elasticsearch.service
+
+Сброс пароля пользователя elastic
+/usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i
+
+Проверка кластера
+root@es-node1:~# curl -k -u elastic:123456 https://localhost:9200/_cat/nodes?v
+ip          heap.percent ram.percent cpu load_1m load_5m load_15m node.role   master name
+10.20.30.51           29          97   0    0.14    0.15     0.10 cdfhilmrstw -      es-node1
+10.20.30.53           28          96   1    0.18    0.24     0.19 cdfhilmrstw *      es-node3
+10.20.30.52           23          96  47    0.90    0.26     0.09 cdfhilmrstw -      es-node2
+
+curl -k -u elastic:123456 https://10.20.30.51:9200
+Должен быть ответ "tagline" : "You Know, for Search"
+
+Если что-то пошло не так, смотрим логи
+journalctl -u elasticsearch
+tail -100 /var/log/elasticsearch/prod.log
+
+###########################################################################
+### Добавление и настройка доп узлов Elasticsearch ####
+###########################################################################
+
+echo "deb [trusted=yes] https://artifacts.elastic.co/packages/8.x/apt stable main" | sudo tee /etc/apt/sources.list.d/elastic-8.x.list
+apt update
+apt install elasticsearch
+
+nano /etc/elasticsearch/jvm.options
+-Xms1g
+-Xmx1g
+
+nano /etc/elasticsearch/elasticsearch.yml
+
+cluster.name: prod
+node.name: es-node2
+network.host: 10.20.30.52
+
+
+Генерируем токен на первом узле es-node1:
+/usr/share/elasticsearch/bin/elasticsearch-create-enrollment-token -s node
+
+Теперь инициируем процедуру присоединения узла к кластеру Elasticsearch:
+/usr/share/elasticsearch/bin/elasticsearch-reconfigure-node --enrollment-token eyJ2ZXIiOiI4LjE0LjAiLCJhZHIiOlsiMTAuMjAuMzAuNTE6OTIwMCJdLCJmZ3IiOiJlZjVkNjYwMWIzMWIwNmI1NzE4MWQ4OTkyMTJiMDE3NzVkZWJjNGVkOTAzMTg1OTZmYjlmNDc5MGMxZjEyYjQ4Iiwia2V5IjoiQjZfRlo1MEJTV1k0QWdFRXVaU1U6ekFwS1hqd0pSaEZjWW1STk16MVlPZyJ9
+
+
+systemctl start elasticsearch.service
+systemctl enable elasticsearch.service
+systemctl status elasticsearch.service
+curl -k -u elastic:123456 https://10.20.30.52:9200
+curl -k -u elastic:123456 https://localhost:9200/_cat/nodes?v
+
+Тоже самое делаем и на третьей ноде
+
+Кластер из двух нод не будет работать, нужна третья нода для кворума, потому что одна нода не может сама себя назначит мастером и не будет обрабатывать запросы (master_not_discovered_exception)
+
+##############################################
+### Завершающая настройка ###
+##############################################
+
+nano /etc/elasticsearch/elasticsearch.yml
+
+везде нужно прописать 
+discovery.seed_hosts: ["10.20.30.51:9300","10.20.30.52:9300","10.20.30.53:9300"]
+http.host: 0.0.0.0   # чтобы работали запросы на https://localhost:9200
+
+и на мастере закомментировать
+cluster.initial_master_nodes: ["10.20.30.51"]
+
+systemctl restart elasticsearch.service
+
+#################################################
+### Работа с кластером ###
+#################################################
+
+# Посмотреть состояние кластера
+curl -k -u elastic:123456 https://localhost:9200/_cat/health?v
+epoch      timestamp cluster status node.total node.data shards pri relo init unassign unassign.pri pending_tasks max_task_wait_time active_shards_percent
+1775565532 12:38:52  prod    green           3         3     24   9    0    0        0            0             0                  -                100.0%
+
+
+
+# Создать тестовый индекс my_test_index
+curl -k -u elastic:123456 -X PUT "https://localhost:9200/my_test_index" -H 'Content-Type: application/json' -d'
+{
+  "settings": {
+    "number_of_shards": 3,
+    "number_of_replicas": 2
+  }
+}'
+
+# Список всех индексов
+curl -k -u elastic:123456 "https://localhost:9200/_cat/indices?v"
+health status index          uuid                   pri rep docs.count docs.deleted store.size pri.store.size dataset.size
+green  open   my_test_index2 ypw0owkgSae8dGPUdTmu7A   3   2          0            0      1.9kb           681b         681b
+green  open   my_test_index  OC7pzN5NQH2gnfTsA_2V4g   3   2          7            0     76.1kb         23.6kb       23.6kb
+
+# Посмотреть список всех шардов
+curl -k -u elastic:123456 https://localhost:9200/_cat/shards?v
+
+# Информация о конкретном индексе
+curl -k -u elastic:123456 https://localhost:9200/my_test_index?pretty
+
+# Добавить один документ
+curl -k -u elastic:123456 -X POST "https://localhost:9200/my_test_index/_doc" -H 'Content-Type: application/json' -d'
+{
+  "name": "Тестовый документ",
+  "description": "Это тестовая запись",
+  "date": "2026-04-07"
+}'
+
+# Добавить несколько документов
+curl -k -u elastic:123456 -X POST "https://localhost:9200/my_test_index/_bulk" -H 'Content-Type: application/json' --data-binary '
+{"index": {}}
+{"name": "Документ 1", "description": "Первый тест"}
+{"index": {}}
+{"name": "Документ 2", "description": "Второй тест"}
+{"index": {}}
+{"name": "Документ 3", "description": "Третий тест"}
+'
+
+# Поиск всех документов
+curl -k -u elastic:123456 "https://localhost:9200/my_test_index/_search?pretty"
+

@@ -1,0 +1,71 @@
+### Установка и настройка docker ###
+
+curl -fsSL https://get.docker.com -o get-docker.sh
+sh get-docker.sh
+sudo usermod -aG docker $USER
+
+### Запуск django-cms-quickstart
+mkdir -p /opt/cms/data
+cd /opt/cms
+nano docker-compose.yml
+
+services:
+  web:
+    image: itsec7/django-cms-quickstart
+    ports:
+      - "80:80"
+    volumes:
+      - "./data:/data:rw"
+      - "./democontent:/app/democontent:ro"
+    command: python manage.py runserver 0.0.0.0:80 
+    restart: unless-stopped
+    networks:
+      - network_django_cms
+    env_file: .env
+networks:
+  network_django_cms:
+
+
+nano .env
+
+### Настройки Django
+DATABASE_URL=postgres://postgres:admin1234@10.20.30.100:5432/cms
+DEFAULT_STORAGE_DSN=file:///data/media/?url=%2Fmedia%2F
+DOMAIN_ALIASES="localhost, 127.0.0.1"
+SECURE_SSL_REDIRECT=False
+DEBUG=True
+
+### На одной из веб нод, разово производим первичную инициализацию базы и создаем администратора вебинтерфейса в CMS
+На сервере баз данных заранее должны быть создана с именем cms
+
+docker compose run --rm web python manage.py migrate
+docker compose run --rm web python manage.py createsuperuser
+
+Запускам приложение
+docker compose up -d
+
+root@web-node-1:/opt/cms# docker compose ps
+NAME        IMAGE                          COMMAND                  SERVICE   CREATED              STATUS              PORTS
+cms-web-1   itsec7/django-cms-quickstart   "python manage.py ru…"   web       About a minute ago   Up About a minute   0.0.0.0:80->80/tcp, [::]:80->80/tcp
+
+
+Добавляем в зону WAN в haproxy пробросы web нод 
+nano /etc/haproxy/haproxy.cfg
+
+# Прокси для HTTP (Django CMS)
+listen http_web
+    mode http
+    bind *:80
+    option httpchk GET /admin/cms
+    http-check expect status 302
+    default-server inter 3s fall 3 rise 2
+    server web-node-1 10.20.30.46:80 maxconn 1000 check
+    server web-node-2 10.20.30.47:80 maxconn 1000 check
+
+Проверяем конфигурацию
+haproxy -f /etc/haproxy/haproxy.cfg -c
+
+systemctl restart haproxy
+
+Смотрим вебинтерфейс
+http://192.168.56.100

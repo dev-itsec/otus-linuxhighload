@@ -1,0 +1,263 @@
+### Prometheus ###
+https://prometheus.io/download/ -> linux -> amd64
+wget https://github.com/prometheus/prometheus/releases/download/v3.8.0/prometheus-3.8.0.linux-amd64.tar.gz
+
+mkdir /etc/prometheus /var/lib/prometheus
+
+tar -zxf prometheus-*.linux-amd64.tar.gz
+cd prometheus-3.8.0.linux-amd64/
+cp prometheus promtool /usr/local/bin/
+cp prometheus.yml /etc/prometheus
+cd .. && rm -rf prometheus-*.linux-amd64/ && rm -f prometheus-*.linux-amd64.tar.gz
+
+useradd --no-create-home --shell /bin/false prometheus
+* мы создали пользователя prometheus без домашней директории и без возможности входа в консоль сервера.
+chown -R prometheus:prometheus /etc/prometheus /var/lib/prometheus
+chown prometheus:prometheus /usr/local/bin/{prometheus,promtool}
+
+sudo -u prometheus /usr/local/bin/prometheus --config.file /etc/prometheus/prometheus.yml --storage.tsdb.path /var/lib/prometheus/
+
+Дожидаемся
+time=2025-12-10T17:40:57.068+03:00 level=INFO source=main.go:1286 msg="Server is ready to receive web requests."
+
+Проверка:
+http://192.168.56.26:9090
+
+nano /etc/systemd/system/prometheus.service
+
+[Unit]
+Description=Prometheus Service
+Documentation=https://prometheus.io/docs/introduction/overview/
+After=network.target
+
+[Service]
+User=prometheus
+Group=prometheus
+Type=simple
+ExecStart=/usr/local/bin/prometheus \
+ --config.file /etc/prometheus/prometheus.yml \
+ --storage.tsdb.path /var/lib/prometheus/
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+
+systemctl enable prometheus
+systemctl start prometheus
+systemctl status prometheus
+
+### Alertmanager ###
+https://prometheus.io/download/
+wget https://github.com/prometheus/alertmanager/releases/download/v0.29.0/alertmanager-0.29.0.linux-amd64.tar.gz
+
+mkdir -p /etc/alertmanager /var/lib/prometheus/alertmanager
+tar -zxf alertmanager-*.linux-amd64.tar.gz
+cd alertmanager-0.29.0.linux-amd64/
+cp alertmanager amtool /usr/local/bin/
+cp alertmanager.yml /etc/alertmanager
+cd .. && rm -rf alertmanager-*.linux-amd64/ && rm -f alertmanager-*.linux-amd64.tar.gz
+
+useradd --no-create-home --shell /bin/false alertmanager
+* мы создали пользователя alertmanager без домашней директории и без возможности входа в консоль сервера.
+
+chown -R alertmanager:alertmanager /etc/alertmanager /var/lib/prometheus/alertmanager
+chown alertmanager:alertmanager /usr/local/bin/{alertmanager,amtool}
+
+nano /etc/systemd/system/alertmanager.service
+
+[Unit]
+Description=Alertmanager Service
+After=network.target
+
+[Service]
+EnvironmentFile=-/etc/default/alertmanager
+User=alertmanager
+Group=alertmanager
+Type=simple
+ExecStart=/usr/local/bin/alertmanager \
+          --config.file=/etc/alertmanager/alertmanager.yml \
+          --storage.path=/var/lib/prometheus/alertmanager \
+          --cluster.advertise-address=0.0.0.0:9093 \
+          $ALERTMANAGER_OPTS
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+
+systemctl enable alertmanager
+systemctl start alertmanager
+systemctl status alertmanager
+
+Проверка 
+http://192.168.56.26:9093
+
+### Prometheus Node Exporter ###
+https://prometheus.io/download/
+wget https://github.com/prometheus/node_exporter/releases/download/v1.10.2/node_exporter-1.10.2.linux-amd64.tar.gz
+
+tar -zxf node_exporter-*.linux-amd64.tar.gz
+
+cd node_exporter-1.10.2.linux-amd64/
+cp node_exporter /usr/local/bin/
+cd .. && rm -rf node_exporter-*.linux-amd64/ && rm -f node_exporter-*.linux-amd64.tar.gz
+
+useradd --no-create-home --shell /bin/false nodeuser
+chown -R nodeuser:nodeuser /usr/local/bin/node_exporter
+
+nano /etc/systemd/system/node_exporter.service
+
+[Unit]
+Description=Node Exporter Service
+After=network.target
+
+[Service]
+User=nodeuser
+Group=nodeuser
+Type=simple
+ExecStart=/usr/local/bin/node_exporter
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+
+systemctl enable node_exporter
+systemctl start node_exporter
+systemctl status node_exporter
+
+Проверка:
+http://192.168.56.26:9100/metrics
+
+### Отображение метрик с node_exporter в консоли Prometheus ###
+
+nano /etc/prometheus/prometheus.yml
+
+scrape_configs:
+  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+  - job_name: "prometheus"
+
+    # metrics_path defaults to '/metrics'
+    # scheme defaults to 'http'.
+
+    static_configs:
+      - targets: ["localhost:9090"]
+       # The label name is added as a label `label_name=<label_value>` to any timeseries scraped from this config.
+        labels:
+          app: "prometheus"
+
+  - job_name: 'linux_exporter_clients'
+    scrape_interval: 5s
+    static_configs:
+      - targets:
+          - localhost:9100
+          - 10.20.30.44:9100 # proxy-node1
+          - 10.20.30.45:9100 # proxy-node2
+          - 10.20.30.46:9100 # web-node1
+          - 10.20.30.47:9100 # web-node2
+
+
+systemctl restart prometheus
+
+Проверяем 
+http://192.168.56.26:9090/targets
+
+### Отображение тревог ####
+
+Создадим простое правило, реагирующее на недоступность клиента.
+Создаем файл с правилом:
+
+nano /etc/prometheus/alert.rules.yml
+
+groups:
+- name: alert.rules
+  rules:
+  - alert: InstanceDown
+    expr: up == 0
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      description: '{{ $labels.instance }} of job {{ $labels.job }} has been down
+        for more than 1 minute.'
+      summary: Instance {{ $labels.instance }} down
+
+Теперь подключим наше правило в конфигурационном файле prometheus:
+
+nano /etc/prometheus/prometheus.yml
+...
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+  - "alert.rules.yml"
+...
+
+systemctl restart prometheus
+
+Проверяем
+http://192.168.56.26:9090/alerts
+
+### Установка Grafana  ###
+
+apt-get install -y adduser libfontconfig1 musl
+wget https://dl.grafana.com/grafana-enterprise/release/12.3.0/grafana-enterprise_12.3.0_19497075765_linux_amd64.deb
+dpkg -i grafana-enterprise_12.3.0_19497075765_linux_amd64.deb
+
+systemctl start grafana-server
+systemctl enable grafana-server
+systemctl status grafana-server
+
+ufw allow 3000/tcp
+
+Проверка http://192.168.100.97:3000/
+admin\admin
+
+### Интеграция Grafana с Prometheus ### 
+Открыть страницу Connections
+Перейти во вкладку Data Sources
+Нажать на кнопку добавления новых источников — Add Data Source.
+Оказавшись на странице настройки подключения Grafana к Prometheus, указываем адрес и порт сервера, а все остальное оставляем как есть.
+В нашем случае это localhost (либо адрес вашего сервера) и стандартный порт 9090. Кликаем на Save and Test.
+
+### Импорт доски для данных Prometheus через ID ###
+
+Чтобы автоматически добавить эту доску через панель управления Grafana, нужно:
+    Открыть страницу Dashboards
+    Нажать на кнопку New
+    Из выпадающего списка выбрать New dashboard
+    Нажать на кнопку Import dashboard
+    Ввести идентификатор доски, который указан на странице официального сайта. Это 3662
+    Нажать на кнопку Load
+Вас перекинет на страницу настроек доски. Даем ей имя и выбираем ранее созданный источник данных — Prometheus.
+После заполнения информации жмем Import.
+
+### Импорт доски для Node_exporter через ID ###
+    Откройте страницу с досками (Dashboards) в панели управления Grafana
+    Нажмите на кнопку New
+    Из выпадающего списка выбрать New dashboard
+    Нажмите кнопку Import dashboard
+    Введите идентификатор доски, который указан на сайте Grafana — 1860
+    Нажмите на кнопку Load
+Далее все так же, как и с подключением доски для Prometheus:
+    Даете имя доске
+    Выбираете в качестве источника данных Prometheus
+    Кликаете на кнопку Import
+Открывшуюся доску можно настроить по своему усмотрению.
+
+### Импорт доски для ASP.NET Core через ID ###
+
+Введите идентификатор доски, который указан на сайте Grafana — 19924
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,85 @@
+настраиваем два сервера с logstash
+перед ним ставим haproxy c keepalived
+
+echo "deb [trusted=yes] https://artifacts.elastic.co/packages/8.x/apt stable main" | sudo tee /etc/apt/sources.list.d/elastic-8.x.list
+apt update
+apt install logstash
+
+Уменьшим потребление памяти для java машины
+nano /etc/logstash/jvm.options
+-Xms512m
+-Xmx512m
+
+# Проверить текущие настройки использования памяти службы Logstash
+systemctl show logstash | grep -i memory
+
+Создание пользователя для Logstash в Elasticsearch
+# На любой ноде Elasticsearch (например, es-node1)
+curl -k -u elastic:123456 -X POST "https://10.20.30.51:9200/_security/user/logstash_user" -H 'Content-Type: application/json' -d'
+{
+  "password" : "logstash123",
+  "roles" : ["superuser"],
+  "full_name" : "Logstash User"
+}'
+
+# Проверить какие роли у пользователя
+curl -k -u elastic:123456 "https://10.20.30.51:9200/_security/user/logstash_user?pretty"
+
+# корнервой из любой ноды эластика cat /etc/elasticsearch/certs/http_ca.crt
+mkdir -p /etc/logstash/certs/
+nano /etc/logstash/certs/http_ca.crt
+
+
+###
+nano /etc/logstash/conf.d/input.conf
+input {
+  beats {
+    port => 5044
+  }
+}
+
+###
+nano /etc/logstash/conf.d/output.conf
+output {
+  elasticsearch {
+    hosts => ["https://10.20.30.51:9200", "https://10.20.30.52:9200", "https://10.20.30.53:9200"]
+    ssl => true
+    ssl_certificate_authorities => ["/etc/logstash/certs/http_ca.crt"]
+    user => "logstash_user"
+    password => "logstash123"
+    index => "filebeats-%{+YYYY.MM.dd}"
+  }
+}
+
+###
+
+systemctl enable logstash
+systemctl start logstash
+systemctl status logstash
+
+netstat -tulpan | grep 5044
+
+# Проверить синтаксис Logstash pipeline (конфиги)
+sudo -u logstash /usr/share/logstash/bin/logstash --config.test_and_exit -f /etc/logstash/conf.d/
+
+# Проверить, что Logstash может подключиться к Elasticsearch
+sudo -u logstash curl -k -X GET "https://10.20.30.51:9200/" -u elastic:123456
+
+# Логи
+journalctl -u logstash -f -n 50
+tail -f /var/log/logstash/logstash-plain.log
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

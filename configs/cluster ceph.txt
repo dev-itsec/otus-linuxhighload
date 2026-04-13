@@ -1,0 +1,256 @@
+### Настройка кластера Ceph ###
+
+Для объектов (используются, RGW/S3). Для использования с RBD (блочные устройства) или CephFS (файловая система) 
+
+Будет использоваться всего 3 сервера, на которых будут устанавливаться все роли. 
+На всех хостах под ceph созданы отдельные диски без разметки /dev/sdc
+
+На всех хостах должен стоять docker, а настройка и управление идет уже через управляющую ноду (к доп нодам подключаемся только для настройки докера)
+
+Установка Docker
+apt install docker.io -y
+mkdir -p /etc/docker
+nano /etc/docker/daemon.json
+
+{
+  "storage-driver": "overlay2",
+  "log-driver": "json-file",
+  "log-opts": {
+     "max-size": "10m",
+     "max-file": "3"
+  },
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 262144,
+      "Soft": 262144
+    }
+  },
+  "default-address-pools": [
+    {
+      "base": "172.17.0.0/16",
+      "size": 24
+    }
+  ]
+}
+
+systemctl restart docker
+
+### Сборка кластера через управляющую ноду ###
+
+В кластере будут участвовать три сервера.
+Роль монитора и датастора объединены на одном сервере.
+ceph-node1 (10.20.30.48) — mon + osd.
+ceph-node2 (10.20.30.49) — mon + osd.
+ceph-node3 (10.20.30.50) — mon + osd.
+
+Инициализация монитора на ноде ceph-node1 
+apt install cephadm
+cephadm bootstrap --mon-ip 10.20.30.48
+
+Ceph Dashboard is now available at:
+
+	     URL: https://ceph-node1:8443/
+	    User: admin
+	Password: cjogusuyll
+
+Для удобства делаем алиас cs
+echo 'alias cs="/usr/sbin/cephadm shell --fsid e26d6c3c-33fe-11f1-b873-694fd6b272ef -c /etc/ceph/ceph.conf -k /etc/ceph/ceph.client.admin.keyring"' >> ~/.bashrc
+source ~/.bashrc
+
+root@ceph-node1:~# docker ps
+CONTAINER ID   IMAGE                                     COMMAND                  CREATED              STATUS              PORTS     NAMES
+fbe98d3e4d53   quay.io/prometheus/alertmanager:v0.25.0   "/bin/alertmanager -…"   6 seconds ago        Up 6 seconds                  ceph-a30149c4-31ba-11f1-bac7-df259202540a-alertmanager-ceph-node1
+987d1c7cb946   quay.io/ceph/ceph                         "/usr/bin/ceph-crash…"   About a minute ago   Up About a minute             ceph-a30149c4-31ba-11f1-bac7-df259202540a-crash-ceph-node1
+c9db355e0500   quay.io/ceph/ceph:v17                     "/usr/bin/ceph-mon -…"   About a minute ago   Up About a minute             ceph-a30149c4-31ba-11f1-bac7-df259202540a-mon-ceph-node1
+f3ca900cb875   quay.io/ceph/ceph-grafana:9.4.7           "/bin/sh -c 'grafana…"   About a minute ago   Up About a minute             ceph-a30149c4-31ba-11f1-bac7-df259202540a-grafana-ceph-node1
+8200621bdc24   quay.io/ceph/ceph:v17                     "/usr/bin/ceph-mgr -…"   About a minute ago   Up About a minute             ceph-a30149c4-31ba-11f1-bac7-df259202540a-mgr-ceph-node1-zyhchv
+50d3421f7291   quay.io/prometheus/node-exporter:v1.5.0   "/bin/node_exporter …"   About a minute ago   Up About a minute             ceph-a30149c4-31ba-11f1-bac7-df259202540a-node-exporter-ceph-node1
+
+Переключаемся в консоль ceph
+cs
+ceph -s или ceph status
+ceph orch host ls
+ceph orch host label add ceph-node1 mon
+exit
+
+### Добавление серверов к кластеру ###
+Смотрим ключ ssh на первой управляющей ноде
+cs -- ceph cephadm get-pub-key 2>/dev/null
+
+ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCb+aQRdumBkHpKzoHlci05gcdGRDsHgaz7U9aw7L8gfIeXpilv/0Zn6PHLQv79Q2Go2sLebH7t2ME/LHOFwnwYhXwreGHP0LCILh1wmS2sNVmcr2LOu8feST1j9bgXV6l9vm2ZsQ3pEUeQ36dupWQus4gWCYYkOHGXgs+eyuQgl1aVk82IBQyLvga6xv/QonocSL5olHB30jwvCh64uC1DEpgD+dsaE1Kz8bUSMpC5748KKnOiSbTCTD1BmiQJuL07JeHF4tfBxg6s8f0PCH9jAwb9vfXqZGTPqwKRpiE2RXhd5gzayAcxVVz0/vqUjzrQhpX85iEFHgG2UqcXXSIbO4ZBs2+ImmAiro3Vljm95aIDq4D8ZNfRfrF7aU+NgdXqmAO2gwqx5vNsgY86epbDn3PGseqXL6ndOOXrNxgRPG4nmyriTGZCBgcPEYmmCxrA4WUyns1Y3xc2wILKyZaA20FPhb7UAbRXkbRn1QM9GtZ5xBm+nEsEh4nQPfOEE9s= ceph-e26d6c3c-33fe-11f1-b873-694fd6b272ef
+
+Добавляем ключ этот на остальные ноды 
+nano /root/.ssh/authorized_keys
+
+Идем на первую ноду и добавляем остальные ноды в кластер:
+cs
+ceph orch host add ceph-node2 10.20.30.49
+ceph orch host add ceph-node3 10.20.30.50
+
+И для удобства добавим всем трем серверам метки osd (object storage daemon):
+ceph orch host label add ceph-node1 osd1
+ceph orch host label add ceph-node2 osd2
+ceph orch host label add ceph-node3 osd3
+
+Проверяем
+root@ceph-node1:/# ceph orch host ls
+HOST        ADDR         LABELS           STATUS  
+ceph-node1  10.20.30.48  _admin,mon,osd1          
+ceph-node2  10.20.30.49  osd2                     
+ceph-node3  10.20.30.50  osd3                     
+3 hosts in cluster
+
+### Добавление дисков ###
+
+Добавляем диски (не всегда успешно проходит, stderr docker: Error response from daemon: Get "https://quay.io/v2/": net/http: TLS handshake timeout, но помогает VPN)
+ceph orch daemon add osd ceph-node1:/dev/sdc
+ceph orch daemon add osd ceph-node2:/dev/sdc
+ceph orch daemon add osd ceph-node3:/dev/sdc
+
+Если на удаленном диске есть файловая система, то ее нужно затереть так
+ceph orch device zap ceph-node2 /dev/sdc --force
+
+Посмотреть, видит ли Ceph диски
+root@ceph-node1:/# ceph orch device ls 
+HOST        PATH      TYPE  DEVICE ID   SIZE  AVAILABLE  REFRESHED  REJECT REASONS                                                           
+ceph-node1  /dev/sdb  hdd              10.0M  No         16m ago    Has a FileSystem, Insufficient space (<5GB)                              
+ceph-node1  /dev/sdc  hdd              10.0G  No         16m ago    Has a FileSystem, Insufficient space (<10 extents) on vgs, LVM detected  
+ceph-node2  /dev/sdb  hdd              10.0M  No         2m ago     Has a FileSystem, Insufficient space (<5GB)                              
+ceph-node2  /dev/sdc  hdd              10.0G  No         2m ago     Has a FileSystem, Insufficient space (<10 extents) on vgs, LVM detected  
+ceph-node3  /dev/sdb  hdd              10.0M  No         38s ago    Has a FileSystem, Insufficient space (<5GB)                              
+ceph-node3  /dev/sdc  hdd              10.0G  No         38s ago    Has a FileSystem, Insufficient space (<10 extents) on vgs, LVM detected
+
+Проверяем 
+ceph osd tree
+
+Проверяем общее состояние кластера:
+root@ceph-node1:/# ceph osd tree
+ID  CLASS  WEIGHT   TYPE NAME            STATUS  REWEIGHT  PRI-AFF
+-1         0.02939  root default                                  
+-3         0.00980      host ceph-node1                           
+ 0    hdd  0.00980          osd.0            up   1.00000  1.00000
+-5         0.00980      host ceph-node2                           
+ 1    hdd  0.00980          osd.1            up   1.00000  1.00000
+-7         0.00980      host ceph-node3                           
+ 2    hdd  0.00980          osd.2            up   1.00000  1.00000
+root@ceph-node1:/# ceph -s
+  cluster:
+    id:     e26d6c3c-33fe-11f1-b873-694fd6b272ef
+    health: HEALTH_WARN
+            2 failed cephadm daemon(s)
+ 
+  services:
+    mon: 3 daemons, quorum ceph-node1,ceph-node3,ceph-node2 (age 3m)
+    mgr: ceph-node1.glkakg(active, since 22m), standbys: ceph-node3.eyulxq
+    osd: 3 osds: 3 up (since 100s), 3 in (since 2m)
+ 
+  data:
+    pools:   1 pools, 1 pgs
+    objects: 2 objects, 449 KiB
+    usage:   873 MiB used, 29 GiB / 30 GiB avail
+    pgs:     1 active+clean
+
+
+Следующая команда покажет сводку по дисковому пространству:
+ceph df
+
+И наконец, смотрим, все ли в порядке с кластером, в целом:
+root@ceph-node1:/# ceph health detail
+HEALTH_WARN 2 failed cephadm daemon(s)
+[WRN] CEPHADM_FAILED_DAEMON: 2 failed cephadm daemon(s)
+    daemon node-exporter.ceph-node2 on ceph-node2 is in error state
+    daemon node-exporter.ceph-node3 on ceph-node3 is in error state
+
+
+### CephFS ###
+Создадим файловую систему, которую можно будет примонтировать на клиенте. Для этого сначала необходимо:
+
+Развернуть демон метаданных (mds).
+cs
+ceph orch apply mds cms_data --placement="ceph-node1 ceph-node2 ceph-node3"
+ceph orch apply mds graf_data --placement="ceph-node1 ceph-node2 ceph-node3"
+ceph orch ps | grep mds
+
+Создать новый логический пул.
+ceph osd pool create cephfs_cms_data 32
+ceph osd pool create cephfs_graf_data 32
+ceph osd pool create cephfs_cms_metadata 16
+ceph osd pool create cephfs_graf_metadata 16
+
+ceph fs status
+ceph mds stat
+ceph orch ps --daemon-type mds
+
+Создать файловую систему CephFS.
+ceph fs new cms_data cephfs_cms_metadata cephfs_cms_data
+ceph fs new graf_data cephfs_graf_metadata cephfs_graf_data
+
+ceph fs ls
+
+### Подключение диска на клиенте web-node1 ###
+apt install -y ceph-common
+
+На сервере ceph смотрим содержимое следующих файлов:
+root@ceph-node1:~# cat /etc/ceph/ceph.client.admin.keyring
+[client.admin]
+	key = AQDff9dpVxgHAxAAyp3nXLZkiDdz81TAG/p1iw==
+	caps mds = "allow *"
+	caps mgr = "allow *"
+	caps mon = "allow *"
+	caps osd = "allow *"
+
+root@ceph-node1:~# cat /etc/ceph/ceph.conf
+# minimal ceph.conf for e26d6c3c-33fe-11f1-b873-694fd6b272ef
+[global]
+	fsid = e26d6c3c-33fe-11f1-b873-694fd6b272ef
+	mon_host = [v2:10.20.30.48:3300/0,v1:10.20.30.48:6789/0] [v2:10.20.30.49:3300/0,v1:10.20.30.49:6789/0] [v2:10.20.30.50:3300/0,v1:10.20.30.50:6789/0
+
+
+На web-node1 создаем
+* с содержимым из файла ceph.client.admin.keyring.
+nano /etc/ceph/ceph.keyring
+
+* с содержимым из файла ceph.conf.
+nano  /etc/ceph/ceph.conf
+
+* содержимое файла ceph.client.admin.keyring (только то, что идет после key =).
+nano /etc/ceph/admin.secret
+
+Создаем каталог, в который будем монтировать файловую систему ceph:
+mkdir -p /opt/cms/data
+mount -t ceph 10.20.30.48:6789,10.20.30.49:6789,10.20.30.50:6789:/ /opt/cms/data -o name=admin,secretfile=/etc/ceph/admin.secret,fs=cms_data
+
+mkdir -p /opt/grafana/data
+mount -t ceph 10.20.30.48:6789,10.20.30.49:6789,10.20.30.50:6789:/ /opt/grafana/data -o name=admin,secretfile=/etc/ceph/admin.secret,fs=graf_data
+
+Автомонтирование
+nano /etc/fstab
+10.20.30.48:6789,10.20.30.49:6789,10.20.30.50:6789:/ /opt/cms/data ceph name=admin,secretfile=/etc/ceph/admin.secret,fs=cms_data,_netdev 0 0
+10.20.30.48:6789,10.20.30.49:6789,10.20.30.50:6789:/ /opt/grafana/data ceph name=admin,secretfile=/etc/ceph/admin.secret,fs=graf_data,_netdev 0 0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

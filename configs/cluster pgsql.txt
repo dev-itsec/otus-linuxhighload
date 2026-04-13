@@ -1,0 +1,321 @@
+################################################
+### Consul
+################################################
+### установка 
+Binary download
+https://developer.hashicorp.com/consul/install
+wget https://releases.hashicorp.com/consul/1.22.6/consul_1.22.6_linux_amd64.zip
+unzip consul_1.22.6_linux_amd64.zip -d /usr/bin/
+consul -v
+
+### настройка
+useradd -r -c 'Consul' consul
+mkdir -p /var/lib/consul /etc/consul.d
+chown consul:consul /var/lib/consul /etc/consul.d
+chmod 775 /var/lib/consul /etc/consul.d
+
+nano /etc/systemd/system/consul.service
+
+[Unit]
+Description=Consul Service Discovery Agent
+Documentation=https://www.consul.io/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=consul
+Group=consul
+ExecStart=/usr/bin/consul agent -config-dir=/etc/consul.d
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGINT
+TimeoutStopSec=5
+Restart=on-failure
+SyslogIdentifier=consul
+
+[Install]
+WantedBy=multi-user.target
+
+Генерируем ключ на одном из серверов, он будет один для всех.
+consul keygen
+RRN1ztbM5BJFimaiRgD/7ZAA7ypm62nTSDK0p7XaDko=
+
+nano /etc/consul.d/config.json
+
+{
+  "bind_addr": "10.20.30.41",
+  "bootstrap_expect": 3,
+  "client_addr": "0.0.0.0",
+  "datacenter": "dc1",
+  "node_name": "pg-node1",
+  "data_dir": "/var/lib/consul",
+  "domain": "consul",
+  "enable_local_script_checks": true,
+  "dns_config": {
+  "enable_truncate": true,
+  "only_passing": true
+  },
+  "enable_syslog": true,
+  "encrypt": "RRN1ztbM5BJFimaiRgD/7ZAA7ypm62nTSDK0p7XaDko=",
+  "leave_on_terminate": true,
+  "log_level": "INFO",
+  "rejoin_after_leave": true,
+  "retry_join": [
+  "10.20.30.41",
+  "10.20.30.42",
+  "10.20.30.43"
+  ],
+  "server": true,
+  "start_join": [
+  "10.20.30.41",
+  "10.20.30.42",
+  "10.20.30.43"
+  ],
+  "ui_config": { "enabled": true }
+}
+
+systemctl daemon-reload
+
+systemctl start consul
+systemctl enable consul
+systemctl status consul
+
+Проверка
+root@db-node1:~# consul operator raft list-peers
+Node       ID                                    Address           State     Voter  RaftProtocol  Commit Index  Trails Leader By
+pg-node3  10526d58-2c0b-5fbe-a76a-3574a04f91d2  10.20.30.43:8300  follower  true   3             44            0 commits
+pg-node1  08445477-faa8-0c9f-d079-02213c92b9dc  10.20.30.41:8300  leader    true   3             44            -
+pg-node2  b33a358a-fb2c-a59d-f4fd-5afa1ae24854  10.20.30.42:8300  follower  true   3             44            0 commits
+
+root@db-node1:~# consul members
+Node       Address           Status  Type    Build   Protocol  DC   Partition  Segment
+pg-node1  10.20.30.41:8301  alive   server  1.22.6  2         dc1  default    <all>
+pg-node2  10.20.30.42:8301  alive   server  1.22.6  2         dc1  default    <all>
+pg-node3  10.20.30.43:8301  alive   server  1.22.6  2         dc1  default    <all>
+
+root@db-node1:~# consul members -detailed
+Node       Address           Status  Tags
+pg-node1  10.20.30.41:8301  alive   acls=0,ap=default,build=1.22.6:97566680,dc=dc1,expect=3,ft_fs=1,ft_si=1,grpc_tls_port=8503,id=08445477-faa8-0c9f-d079-02213c92b9dc,port=8300,raft_vsn=3,role=consul,segment=<all>,vsn=2,vsn_max=3,vsn_min=2,wan_join_port=8302
+pg-node2  10.20.30.42:8301  alive   acls=0,ap=default,build=1.22.6:97566680,dc=dc1,expect=3,ft_fs=1,ft_si=1,grpc_tls_port=8503,id=b33a358a-fb2c-a59d-f4fd-5afa1ae24854,port=8300,raft_vsn=3,role=consul,segment=<all>,vsn=2,vsn_max=3,vsn_min=2,wan_join_port=8302
+pg-node3  10.20.30.43:8301  alive   acls=0,ap=default,build=1.22.6:97566680,dc=dc1,expect=3,ft_fs=1,ft_si=1,grpc_tls_port=8503,id=10526d58-2c0b-5fbe-a76a-3574a04f91d2,port=8300,raft_vsn=3,role=consul,segment=<all>,vsn=2,vsn_max=3,vsn_min=2,wan_join_port=8302
+
+Вход на вебинтерфейс http://192.168.56.11:8500
+
+################################################
+### PostgreSQL
+################################################
+### Установка
+
+wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+apt update
+
+apt install -y postgresql-16 postgresql-contrib-16
+
+Подготавливаем PostgreSQL для работы с сервисом patroni.
+Узнаем путь к базам PostgreSQL.
+sudo -u postgres psql -c 'SHOW data_directory;'
+
+data_directory = /var/lib/postgresql/16/main
+
+Останавливаем и убираем с автозапуска PostgreSQL и удаляем базы на всех серверах.
+Patroni будет управлять PostgreSQL, поэтому мы отключаем дефолтную службу PostgreSQL
+sudo systemctl stop postgresql
+sudo systemctl disable postgresql
+rm -rf /var/lib/postgresql/16/main/*
+
+################################################
+### Patroni
+################################################
+
+Ставим дополнительные компоненты
+apt install -y python3 python3-pip python3-psycopg2 
+
+Устанавливаем patroni для Consul
+pip3 install patroni[consul]
+
+Проверяем, что patroni установился.
+patroni –version
+
+mkdir /etc/patroni
+nano /etc/patroni/patroni.yml
+
+name: pg-node1    ###
+scope: pgdb
+
+watchdog:
+  mode: off
+
+consul:
+  host: "localhost:8500"
+  register_service: true
+# token: 08099d25-da75-c555-eab8-30f863e2d0bb
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: "10.20.30.41:8008"    ###
+# auth: 'patrest:password'
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        archive_mode: "on"
+        wal_level: hot_standby
+        max_wal_senders: 10
+        wal_keep_segments: 8
+        archive_timeout: 1800s
+        max_replication_slots: 5
+        hot_standby: "on"
+        wal_log_hints: "on"
+initdb:
+  - encoding: UTF8
+  - data-checksums
+
+pg_hba:
+  - local all postgres peer
+  - host replication replicator 10.20.30.0/24 md5
+  - host replication replicator 127.0.0.1/32 trust
+  - host all all 0.0.0.0/0 md5
+
+postgresql:
+  pgpass: /var/lib/postgresql/16/.pgpass
+  listen: 0.0.0.0:5432
+  connect_address: "10.20.30.41:5432"    ###
+  data_dir: /var/lib/postgresql/16/main
+  bin_dir: /usr/lib/postgresql/16/bin
+  pg_rewind:
+    username: postgres
+    password: admin1234
+  pg_hba:
+    - local all postgres peer
+    - host replication replicator 10.20.30.0/24 md5
+    - host replication replicator 127.0.0.1/32 trust
+    - host all all 0.0.0.0/0 md5
+  replication:
+    username: replicator
+    password: repli1234
+  superuser:
+    username: postgres
+    password: admin1234
+
+
+nano /lib/systemd/system/patroni.service
+
+[Unit]
+Description=Patroni service
+After=syslog.target network.target
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart=/usr/local/bin/patroni /etc/patroni/patroni.yml
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=process
+TimeoutSec=30
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
+
+systemctl daemon-reload
+
+systemctl start patroni
+systemctl enable patroni
+systemctl status patroni
+
+Проверяем кластер patroni и кто стал лидером
+root@db-node1:~# patronictl -c /etc/patroni/patroni.yml list
++ Cluster: pgdb (7625327562205534571) --------+----+-------------+-----+------------+-----+
+| Member    | Host        | Role    | State     | TL | Receive LSN | Lag | Replay LSN | Lag |
++-----------+-------------+---------+-----------+----+-------------+-----+------------+-----+
+| pg-node1 | 10.20.30.41 | Leader  | running   |  1 |             |     |            |     |
+| pg-node2 | 10.20.30.42 | Replica | streaming |  1 |   0/4000060 |   0 |  0/4000060 |   0 |
+| pg-node3 | 10.20.30.43 | Replica | streaming |  1 |   0/4000060 |   0 |  0/4000060 |   0 |
++-----------+-------------+---------+-----------+----+-------------+-----+------------+-----+
+
+Проверьте, что Patroni зарегистрировался в Consul:
+
+# Проверить сервисы в Consul
+curl -s http://localhost:8500/v1/catalog/services | python3 -m json.tool
+
+# Проверить ключи Patroni в Consul
+consul kv get -recurse service/pgdb/
+
+### Созадем базы данных и проверяем их репликацию
+Создаем базу на лидер ноде
+
+sudo -u postgres psql
+\l
+CREATE DATABASE cms;
+
+# Проверить, что db-node-2 действительно в режиме реплики
+sudo -u postgres psql -c "SELECT pg_is_in_recovery();"
+# Должно вернуть 't' (true) - значит это реплика
+
+Пробуем создать базу на реплике db-node-2 и не получается
+postgres=# CREATE DATABASE cms;
+ERROR:  cannot execute CREATE DATABASE in a read-only transaction
+
+Бывает, что один из участников кластера подвисает и репликация может работать неправильно.
+В этом случае, можно выполнить повторную инициализацию узла кластера
+patronictl -c /etc/patroni/patroni.yml reinit pg-sql
+
+Смена лидера (мастера ноды)
+patronictl -c /etc/patroni/patroni.yml failover pg-sql
+
+Увидеть подробный лог работы patroni 
+journalctl -u patroni -f
+
+### Создаем базу данных и пользователя для Grafana
+
+sudo -u postgres psql
+
+-- Создаем базу данных для Grafana
+CREATE DATABASE grafana;
+
+-- Создаем пользователя 
+CREATE USER grafana_user WITH PASSWORD 'grafana123';
+
+-- Даем права на подключение к базе
+GRANT CONNECT ON DATABASE grafana TO grafana_user;
+
+-- Даем права на создание таблиц (Grafana сама создаст схему)
+GRANT CREATE, TEMP ON DATABASE grafana TO grafana_user;
+
+-- Переключаемся на базу и даем права на схему public
+\c grafana
+
+GRANT ALL PRIVILEGES ON SCHEMA public TO grafana_user;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO grafana_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO grafana_user;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

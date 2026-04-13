@@ -1,0 +1,47 @@
+делаю проект на тему Проектирование масштабируемой и отказоустойчивой инфраструктуры для высоконагруженных систем с использованием кластеров PostgreSQL, Ceph, Elasticsearch и HAProxy
+
+нужна картинка для схемы проекта
+
+список нод такой:
+
+Cluster PostgreSQL(Patroni+Consul)
+pg-node1
+pg-node2
+pg-node3
+
+HAProxy+Keepalived (WAN\LAN)
+proxy-node1
+proxy-node2
+
+Docker Containers(CMS,Kibana,Grafana)
+web-node1
+web-node1
+
+Cluster Ceph
+ceph-node1
+ceph-node2
+ceph-node3
+
+Cluster ElasticSearch
+es-node1
+es-node2
+es-node3
+
+Logstash
+logstash-node1
+logstash-node2
+
+Prometheus
+prom-node1
+prom-node2
+
+через haproxy проксируется следующее WAN to LAN: CMS,Kibana,Grafana
+через haproxy проксируется следующее LAN to LAN: PostgreSQL нода Master и отдельно нода Slave
+
+База данных CMS и Grafana лежат в кластере PostgreSQL
+Файловые данные CMS и Grafana лежат в кластере PostgreSQL
+
+
+
+
+

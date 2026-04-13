@@ -1,0 +1,145 @@
+
+### настройка агентов filebeat ####
+echo "deb [trusted=yes] https://artifacts.elastic.co/packages/8.x/apt stable main" | sudo tee /etc/apt/sources.list.d/elastic-8.x.list
+apt update
+apt install filebeat
+
+или пакетом
+
+wget https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.19.13-amd64.deb
+dpkg -i filebeat-*.deb
+
+mv /etc/filebeat/filebeat.yml /etc/filebeat/filebeat.yml.bak
+nano /etc/filebeat/filebeat.yml
+
+
+###################### Filebeat Configuration Example #########################
+
+# ============================== Filebeat inputs ===============================
+
+filebeat.inputs:
+
+# Input для системных логов
+- type: filestream
+  id: system-logs
+  enabled: true
+  paths:
+    - /var/log/*.log
+    - /var/log/secure
+    - /var/log/messages
+    - /var/log/syslog
+
+# Input для логов Docker контейнеров
+- type: filestream
+  id: docker-logs
+  enabled: true
+  paths:
+    - /var/lib/docker/containers/*/*.log
+  parsers:
+    - ndjson:
+        target: docker
+        add_error_key: true
+  processors:
+    # Добавляем метаданные Docker (контейнер, образ, etc.)
+    - add_docker_metadata:
+        host: "unix:///var/run/docker.sock"
+        match_fields:
+          - "container.id"
+    # Переименовываем поле log в message
+    - rename:
+        fields:
+          - from: "docker.log"
+            to: "message"
+        ignore_missing: true
+    # Добавляем поле для фильтрации
+    - add_fields:
+        target: ""
+        fields:
+          service.type: "docker"
+
+# Input для логов Kibana 
+#- type: filestream
+#  id: kibana-logs
+#  enabled: true
+#  paths:
+#    - /opt/kibana/logs/*.log
+#    - /var/log/kibana/*.log
+
+# Input для логов Nginx 
+# - type: filestream
+#   id: nginx-logs
+#   enabled: true
+#   paths:
+#     - /var/log/nginx/*.log
+
+# ============================== Filebeat modules ==============================
+
+filebeat.config.modules:
+  path: ${path.config}/modules.d/*.yml
+  reload.enabled: false
+
+# ======================= Elasticsearch template setting =======================
+
+setup.template.settings:
+  index.number_of_shards: 1
+
+# ================================== Outputs ===================================
+
+# ------------------------------ Logstash Output -------------------------------
+output.logstash:
+  hosts: ["10.20.30.54:5044", "10.20.30.55:5044"]
+  loadbalance: true
+  timeout: 30
+  ssl.certificate_verification: false
+  ssl.enabled: false
+
+  # Если нужен SSL
+  # ssl.enabled: true
+  # ssl.certificate_authorities: ["/etc/filebeat/certs/http_ca.crt"]
+
+# ---------------------------- Elasticsearch Output  ---------------------------
+# output.elasticsearch:
+#   hosts: ["localhost:9200"]
+#   preset: balanced
+
+# ================================= Processors =================================
+
+processors:
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+  - add_cloud_metadata: ~
+  - add_docker_metadata: ~
+  - add_kubernetes_metadata: ~
+
+# ================================== Logging ===================================
+
+logging.level: info
+
+
+##############################
+Запуск и проверка Filebeat
+###############################
+
+# Проверить конфигурацию
+filebeat test config
+
+# Проверить подключение к Logstash
+filebeat test output
+
+# Запустить Filebeat
+systemctl start filebeat
+systemctl enable filebeat
+
+# Проверить статус
+systemctl status filebeat
+
+# Посмотреть логи Filebeat
+journalctl -u filebeat -f
+
+Для теста можно отправить тестовое сообщение
+# сгенерировать syslog
+logger "Test message from filebeat"
+
+
+
+
