@@ -54,6 +54,11 @@ Ceph Dashboard is now available at:
 	    User: admin
 	Password: cjogusuyll
 
+Проверяем веб-интерфейс и меняем пароль администратора
+https://192.168.56.18:8443
+admin
+cjogusuyll@
+
 Для удобства делаем алиас cs
 echo 'alias cs="/usr/sbin/cephadm shell --fsid e26d6c3c-33fe-11f1-b873-694fd6b272ef -c /etc/ceph/ceph.conf -k /etc/ceph/ceph.client.admin.keyring"' >> ~/.bashrc
 source ~/.bashrc

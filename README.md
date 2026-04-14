@@ -255,6 +255,8 @@ b70c934fdcd2   itsec7/django-cms-quickstart              "python manage.py ru…
 ```
 - Load Balancer HAProxy
 ![haproxy](/images/haproxy.png)
+- Cluster Ceph
+![ceph](/images/ceph.png)
 - Cluster Consul
 ![consul](/images/consul.png)
 - Cluster Elasticsearch
